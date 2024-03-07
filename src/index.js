@@ -2,7 +2,7 @@ let Parser = require('rss-parser');
 let parser = new Parser();
 const puppeteer = require('puppeteer');
 let OpenAI = require('openai');
-const { default: config } = require('../config');
+const config = require('../config');
 
 const openai = new OpenAI({
 	apiKey: config.chatGPTApiKey,
