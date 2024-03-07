@@ -20,13 +20,13 @@ const handler = async () => {
 			name: 'BBC Football',
 			url: 'http://newsrss.bbc.co.uk/rss/sportonline_uk_edition/football/rss.xml',
 			type: 'BBC',
-			articleCount: 1,
+			articleCount: 5,
 		},
 		{
 			name: 'BBC News UK',
 			url: 'http://newsrss.bbc.co.uk/rss/newsonline_uk_edition/front_page/rss.xml',
 			type: 'BBC',
-			articleCount: 1,
+			articleCount: 5,
 		},
 	];
 
