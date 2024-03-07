@@ -1,46 +1,43 @@
-require('dotenv').config({ path: '../.env' });
+require('dotenv').config();
 
 const nodemailer = require('nodemailer');
 const hbs = require('nodemailer-express-handlebars');
 let Parser = require('rss-parser');
 let parser = new Parser();
-const puppeteer = require('puppeteer');
 let OpenAI = require('openai');
+const axios = require('axios');
+const jsdom = require('jsdom');
+const { JSDOM } = jsdom;
+const { backOff } = require('exponential-backoff');
 
 const openai = new OpenAI({
 	apiKey: process.env.CHAT_GPT_API_KEY,
 });
 
-async function run() {
+const handler = async () => {
 	const feeds = [
 		{
 			name: 'BBC Football',
 			url: 'http://newsrss.bbc.co.uk/rss/sportonline_uk_edition/football/rss.xml',
 			type: 'BBC',
-			articleCount: 5,
+			articleCount: 1,
 		},
 		{
 			name: 'BBC News UK',
 			url: 'http://newsrss.bbc.co.uk/rss/newsonline_uk_edition/front_page/rss.xml',
 			type: 'BBC',
-			articleCount: 5,
-		},
-		{
-			name: 'Sky Sports News',
-			url: 'http://newsrss.bbc.co.uk/rss/newsonline_uk_edition/front_page/rss.xml',
-			type: 'SKY',
 			articleCount: 1,
 		},
 	];
 
-	const browser = await puppeteer.launch();
+	const before = Date.now();
 
 	const promises = [];
 
 	for (const feed of feeds) {
 		switch (feed.type) {
 			case 'BBC':
-				promises.push(parseBBCFeed(feed, browser));
+				promises.push(parseBBCFeed(feed));
 				break;
 			default:
 				console.error(`No parser for ${feed.type}`);
@@ -51,21 +48,21 @@ async function run() {
 
 	await sendEmail(results);
 
-	await browser.close();
-}
+	const after = Date.now();
+	console.log(`Ran in: ${(after - before) / 1000}secs`);
+};
 
-async function parseBBCFeed(feed, browser) {
+module.exports = { handler };
+
+async function parseBBCFeed(feed) {
 	let parsedFeed = await parser.parseURL(feed.url);
 
 	const promises = [];
 
 	for (const item of parsedFeed.items.slice(0, feed.articleCount)) {
-		const page = await browser.newPage();
-		await page.goto(item.link, { waitUntil: 'networkidle2' });
-
-		const article = await page.evaluate(() => {
-			return [...document.querySelectorAll('article')][0].textContent;
-		});
+		const response = await axios.get(item.link);
+		const dom = new JSDOM(response.data);
+		const article = [...dom.window.document.querySelectorAll('article')][0].textContent;
 
 		promises.push(summarise(article, item));
 	}
@@ -76,19 +73,35 @@ async function parseBBCFeed(feed, browser) {
 }
 
 async function summarise(content, item) {
-	const completion = await openai.chat.completions.create({
-		messages: [
-			{ role: 'system', content: 'You are a helpful assistant.' },
-			{ role: 'user', content: `Summarise this: ${content.substring(0, 16300)}` },
-		],
-		model: 'gpt-3.5-turbo',
-	});
+	try {
+		const response = await backOff(
+			async () => {
+				return await openai.chat.completions.create({
+					messages: [
+						{ role: 'user', content: `Summarise this: ${content.substring(0, 16300)}` },
+					],
+					model: 'gpt-3.5-turbo',
+				});
+			},
+			{
+				delayFirstAttempt: false,
+				retry: async (e) => {
+					console.error(e.error.message);
+					console.error(`Delaying for: ${e.headers['retry-after-ms']}`);
+					await delay(parseInt(e.headers['retry-after-ms']) + 2000);
+					return true;
+				},
+			}
+		);
 
-	return {
-		link: item.link,
-		title: item.title,
-		content: completion.choices[0].message.content,
-	};
+		return {
+			link: item.link,
+			title: item.title,
+			content: response.choices[0].message.content,
+		};
+	} catch (error) {
+		console.error('Backed off', error);
+	}
 }
 
 async function sendEmail(results) {
@@ -122,4 +135,8 @@ async function sendEmail(results) {
 	console.log('Email Sent!');
 }
 
-run();
+handler();
+
+const delay = (delayInms) => {
+	return new Promise((resolve) => setTimeout(resolve, delayInms));
+};
